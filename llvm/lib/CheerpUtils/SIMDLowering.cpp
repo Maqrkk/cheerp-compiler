@@ -517,6 +517,9 @@ struct SIMDLoweringVisitor: public InstVisitor<SIMDLoweringVisitor, VectorParts>
 
 	VectorParts lowerReduceIntrinsic(IntrinsicInst& I)
 	{
+		if (!lowerAll)
+			return VectorParts();
+
 		// Reduce intrinsics take a vector and return a scalar.
 		// Lower this to do the operation on the separate elements.
 		Intrinsic::ID id = I.getIntrinsicID();
@@ -542,6 +545,9 @@ struct SIMDLoweringVisitor: public InstVisitor<SIMDLoweringVisitor, VectorParts>
 
 	VectorParts lowerSplatIntrinsic(IntrinsicInst& I)
 	{
+		if (!lowerAll)
+			return VectorParts();
+
 		// Splat intrinsics take a scalar and return a vector of elements
 		// with all elements being the scalar.
 		const FixedVectorType* vecType = cast<FixedVectorType>(I.getType());
@@ -558,6 +564,9 @@ struct SIMDLoweringVisitor: public InstVisitor<SIMDLoweringVisitor, VectorParts>
 
 	VectorParts lowerShiftIntrinsic(IntrinsicInst& I)
 	{
+		if (!lowerAll)
+			return VectorParts();
+
 		// Lower the bitshift intrinsics to separate bitshifts.
 		const FixedVectorType* vecType = cast<FixedVectorType>(I.getType());
 		const unsigned num = vecType->getNumElements();
@@ -582,14 +591,34 @@ struct SIMDLoweringVisitor: public InstVisitor<SIMDLoweringVisitor, VectorParts>
 		toDelete.push_back(&I);
 		changed = true;
 		return result;
+	}
 
+	VectorParts lowerMinMaxIntrinsic(IntrinsicInst& I)
+	{
+		if (!shouldLower(I.getType()))
+			return VectorParts();
+
+		const FixedVectorType* vecType = cast<FixedVectorType>(I.getType());
+		const unsigned num = vecType->getNumElements();
+		IRBuilder<> Builder(&I);
+		VectorParts v1 = visitValue(I.getOperand(0));
+		VectorParts v2 = visitValue(I.getOperand(1));
+
+		VectorParts result;
+		std::vector<Type *> argTypes = { vecType->getElementType() };
+		Function* intrinsic = Intrinsic::getDeclaration(I.getModule(), I.getIntrinsicID(), argTypes);
+		for (unsigned i = 0; i < num; i++)
+		{
+			CallInst* call = Builder.CreateCall(intrinsic, {v1.values[i], v2.values[i]});
+			result.values.push_back(call);
+		}
+		toDelete.push_back(&I);
+		changed = true;
+		return result;
 	}
 
 	VectorParts visitIntrinsicInst(IntrinsicInst& I)
 	{
-		if (!lowerAll)
-			return VectorParts();
-
 		// Here we are looking for a few specific intrinsics.
 		Intrinsic::ID id = I.getIntrinsicID();
 		if (id == Intrinsic::vector_reduce_mul ||
@@ -603,6 +632,11 @@ struct SIMDLoweringVisitor: public InstVisitor<SIMDLoweringVisitor, VectorParts>
 			id == Intrinsic::cheerp_wasm_shr_s ||
 			id == Intrinsic::cheerp_wasm_shr_u)
 			return lowerShiftIntrinsic(I);
+		if (id == Intrinsic::umax ||
+			id == Intrinsic::umin ||
+			id == Intrinsic::smax ||
+			id == Intrinsic::smin)
+			return lowerMinMaxIntrinsic(I);
 
 		return VectorParts();
 	}
